@@ -154,10 +154,9 @@ class Parser:
 			if self.check_seller_threads:
 				if '<a href="/profile/account/' not in thread_html: return False
 				thread_profile = thread_html.split('<a href="/profile/account/')[1].split('"')[0]
-				async with httpx.AsyncClient(proxies=proxies) as client:
-					resp = await client.get(f'https://www.gumtree.com/profile/account/{thread_profile}')
-					try: seller_threads_count = int(resp.text.split('<h2 class="css-v1sa9n e1l2cxkl9">')[1].split()[0])
-					except: seller_threads_count = 0
+				resp, proxies = await self.get(url=f'https://www.gumtree.com/profile/account/{thread_profile}')
+				try: seller_threads_count = int(resp.text.split('<h2 class="css-v1sa9n e1l2cxkl9">')[1].split()[0])
+				except: seller_threads_count = 0
 				if seller_threads_count <= self.max_seller_threads_count:
 					await self.save_to_file(f'{thread_url}|{thread_title}|{thread_price}|{thread_currency}|{thread_img}')
 					return True
