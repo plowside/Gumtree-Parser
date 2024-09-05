@@ -17,7 +17,8 @@ class ProxyManager:
 		elif proxy_path and os.path.exists(proxy_path): self.proxies_to_check = open(proxy_path, 'r', encoding='utf-8').read().splitlines()
 		else: self.proxies_to_check = []
 		self.proxies = {}
-	
+		self.clients = {}
+
 	def get_proxy(self, is_httpx: bool = True):
 		try:
 			min_usage_proxy = min(self.proxies, key=self.proxies.get)
@@ -28,6 +29,17 @@ class ProxyManager:
 				return {'http://': proxy_formated, 'https://': proxy_formated}
 			else: return min_usage_proxy.split(':')
 		except: return None
+
+	def get_client(self, proxy):
+		if isinstance(proxy, str) and proxy in self.clients: client = self.clients[proxy]
+		elif isinstance(proxy, dict) and proxy.get('http://', None) in self.clients: client = self.clients[proxy.get('http://', None)]
+		else:
+			if isinstance(proxy, str):
+				_proxy = proxy.split(':')
+				proxy_formated = f'{"http" if proxy_protocol["http"] else "socks5"}://{_proxy[2]}:{_proxy[3]}@{_proxy[0]}:{_proxy[1]}'
+				client = httpx.AsyncClient(proxies=proxy_formated)
+			else: client = httpx.AsyncClient(proxies=proxy)
+		return client
 
 	def record_proxy_usage(self, proxy):
 		if proxy in self.proxies:
@@ -42,7 +54,7 @@ class ProxyManager:
 			self.proxies[proxy] = 0
 		except:
 			logging.info(f'[proxy_check] Невалидный прокси: {proxy}')
-			del self.proxies[proxy]
+			if proxy in self.proxies: del self.proxies[proxy]
 
 	async def proxy_check(self):
 		logging.info(f'Проверяю {len(self.proxies_to_check)} прокси')
@@ -70,6 +82,7 @@ class Parser:
 		self.base_url = 'https://www.gumtree.com'
 		self.headers = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7', 'accept-language': 'ru,en-US;q=0.9,en;q=0.8,ru-RU;q=0.7', 'priority': 'u=0, i', 'referer': 'https://www.gumtree.com/for-sale/computers-software', 'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'same-origin', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'}
 		self.parsed_threads = parsed_threads
+		self.clients = {}
 
 	def format_url(self, category: str, **kwargs):
 		url = f'{self.base_url}/search'
@@ -78,28 +91,27 @@ class Parser:
 		params = {**params, **kwargs}
 		return (url, params)
 
-	async def get(self, url: str, params: dict = {}, headers: dict = {}, exc_from: str = None):
-		while True:
-			try:
-				proxies = self.proxy_client.get_proxy()
-				async with httpx.AsyncClient(proxies=proxies) as client:
-					resp = await client.get(url, params=params, headers=self.headers)
-					if resp.status_code == 200:
-						break
-					else:
-						logging.debug(f'[{exc_from}]: {resp.status_code} | {params.get("search_category", None)}')
-						await asyncio.sleep(antiflood_sleep_time.get(exc_from, 5))
-						proxies = self.proxy_client.get_proxy()
-			except Exception as e: logging.error(f'Ошибка при запросе на {url}: {e}')
-		return (resp, proxies)
-
 	async def save_to_file(self, text: str):
 		async with aiofiles.open(save_path, 'a', encoding='utf-8') as out:
 			await out.write(f'{text}\n')
 
 	async def parse_category(self, category: str):
 		url, params = self.format_url(category)
-		resp, proxies = await self.get(url=url, params=params, exc_from='parse_category')
+		while True:
+			try:
+				proxies = self.proxy_client.get_proxy()
+				aclient = self.proxy_client.get_client(proxies)
+				print(aclient)
+				async with aclient as client:
+					resp = await client.get(url, params=params, headers=self.headers)
+					if resp.status_code == 200:
+						break
+					else:
+						logging.info(f'[{"parse_category"}]: {resp.status_code} | {params.get("search_category", None)}')
+						await asyncio.sleep(antiflood_sleep_time.get("parse_category", 5))
+						proxies = self.proxy_client.get_proxy()
+			except Exception as e: logging.error(f'Ошибка при запросе на {url}: {e}')
+
 		tasks = []
 		for page_idx in range(1, self.pages_to_parse+1):
 			tasks.append(self.find_threads_per_page(proxies, category, page_idx))
@@ -109,11 +121,18 @@ class Parser:
 		url, params = self.format_url(category, page=page_idx)
 		while True:
 			try:
-				resp, proxies = await self.get(url=url, params=params, exc_from='find_threads_per_page')
-				threads_on_page = resp.text.count('"position":')
-				threads = json.loads(resp.text.split('application/ld+json">')[1].split('</script>')[0]).get('itemListElement', [])
-				break
-			except: ...
+				async with self.proxy_client.get_client(proxies) as client:
+					resp = await client.get(url, params=params, headers=self.headers)
+					if resp.status_code == 200:
+						threads_on_page = resp.text.count('"position":')
+						threads = json.loads(resp.text.split('application/ld+json">')[1].split('</script>')[0]).get('itemListElement', [])
+						break
+					else:
+						logging.info(f'[{"find_threads_per_page"}]: {resp.status_code} | {params.get("search_category", None)}')
+						await asyncio.sleep(antiflood_sleep_time.get("find_threads_per_page", 5))
+						proxies = self.proxy_client.get_proxy()
+			except Exception as e: logging.error(f'Ошибка при запросе на {url}: {e}')
+
 
 		logging.info(f'[{category}|{page_idx}] Найдено объявлений: {len(threads)}')
 		v = 0
@@ -123,14 +142,24 @@ class Parser:
 			if thread_url == '' or thread_url in self.parsed_threads: continue
 			
 			thread_title = thread.get('name', None)
-			is_parsed = await self.parse_thread(thread_url, thread_title=thread_title)
+			is_parsed = await self.parse_thread(thread_url, proxies=proxies, thread_title=thread_title)
 			if is_parsed: v += 1
 			self.parsed_threads.append(thread_url)
 		logging.info(f'[{category}|{page_idx}] Спаршено объявлений: {v} из {len(threads)}')
 
-	async def parse_thread(self, thread_url: str, thread_title: str = None):
-		resp, proxies = await self.get(url=thread_url, params=params, exc_from='parse_thread')
-		thread_html = resp.text
+	async def parse_thread(self, thread_url: str, proxies: str, thread_title: str = None):
+		while True:
+			try:
+				async with self.proxy_client.get_client(proxies) as client:
+					resp = await client.get(thread_url, headers=self.headers)
+					if resp.status_code == 200:
+						thread_html = resp.text
+						break
+					else:
+						logging.info(f'[{"parse_thread"}]: {resp.status_code} | {params.get("search_category", None)}')
+						await asyncio.sleep(antiflood_sleep_time.get("parse_thread", 5))
+						proxies = self.proxy_client.get_proxy()
+			except Exception as e: logging.error(f'Ошибка при запросе на {url}: {e}')
 
 		thread_creation_date = datetime.datetime.strptime(thread_html.split('creationDate": "')[1].split('"')[0].split('T')[0], '%Y-%m-%d')
 		if self.sort_by_date and not (thread_creation_date == self.thread_creation_date): return False
