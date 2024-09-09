@@ -2,7 +2,7 @@
 categories_to_parse_path = 'data/cats.txt' # Путь до файла с категориями для парсинга
 min_price = 5					# Минимальная цена
 max_price = 999					# Максимальная цена
-pages_to_parse = 3				# Сколько страниц объявлений спарсить
+pages_to_parse = 10				# Сколько страниц объявлений спарсить
 check_seller_threads = True		# Проверять количество объявлений у продавца
 max_seller_threads_count = 3	# Максимальное кол-во объявлений продавца
 skip_accounts_with_rating = True	# Пропускать аккаунты с рейтингом
@@ -13,8 +13,9 @@ save_path = 'data/result.txt'	# Путь до файла для сохранен
 
 antiflood_sleep_time = { # Время для сна перед след. попыткой при срабатывании антифлуда
 	'parse_category': 1,
-	'find_threads_per_page': 30,
-	'parse_thread': 30,
+	'find_threads_per_page': 1,
+	'parse_thread': 1,
+	'restart': 120
 }
 
 ### PROXY

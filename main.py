@@ -1,4 +1,4 @@
-import traceback, aiofiles, datetime, logging, asyncio, random, httpx, socks, json, time, re, os
+import http.cookiejar, traceback, aiofiles, datetime, logging, asyncio, random, httpx, socks, json, time, re, os
 
 from config import *
 
@@ -34,6 +34,7 @@ class ProxyManager:
 			self.proxies[proxy] -= 1
 
 	async def proxy_check_(self, proxy):
+		if '@' in proxy: proxy = f"{proxy.split('@')[1]}:{proxy.split('@')[0]}"
 		_proxy = proxy.split(':')
 		try:
 			proxy_formated = f'{"http" if proxy_protocol["http"] else "socks5"}://{_proxy[2]}:{_proxy[3]}@{_proxy[0]}:{_proxy[1]}'
@@ -70,6 +71,7 @@ class Parser:
 		self.base_url = 'https://www.gumtree.com'
 		self.headers = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7', 'accept-language': 'ru,en-US;q=0.9,en;q=0.8,ru-RU;q=0.7', 'priority': 'u=0, i', 'referer': 'https://www.gumtree.com/for-sale/computers-software', 'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'same-origin', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'}
 		self.parsed_threads = parsed_threads
+		self.cookies = {}
 
 	def format_url(self, category: str, **kwargs):
 		url = f'{self.base_url}/search'
@@ -78,16 +80,19 @@ class Parser:
 		params = {**params, **kwargs}
 		return (url, params)
 
-	async def get(self, url: str, params: dict = {}, headers: dict = {}, exc_from: str = None):
+	async def get(self, url: str, proxies: dict = None, params: dict = {}, headers: dict = {}, exc_from: str = None):
 		while True:
 			try:
-				proxies = self.proxy_client.get_proxy()
+				if not proxies: proxies = self.proxy_client.get_proxy()
 				async with httpx.AsyncClient(proxies=proxies) as client:
+					client.cookies = self.cookies.get(str(proxies), http.cookiejar.CookieJar())
 					resp = await client.get(url, params=params, headers=self.headers)
-					if resp.status_code == 200:
+					print(dict(proxies=proxies, url=url, params=params, headers=self.headers))
+					if resp.status_code == 200 and 'kramericaindustries.ac.lib.js' not in resp.text:
+						self.cookies[str(proxies)] = client.cookies
 						break
 					else:
-						logging.debug(f'[{exc_from}]: {resp.status_code} | {params.get("search_category", None)}')
+						logging.info(f'[{exc_from}]: {resp.status_code} | {params.get("search_category", None)}')
 						await asyncio.sleep(antiflood_sleep_time.get(exc_from, 5))
 						proxies = self.proxy_client.get_proxy()
 			except Exception as e: logging.error(f'Ошибка при запросе на {url}: {e}')
@@ -109,7 +114,7 @@ class Parser:
 		url, params = self.format_url(category, page=page_idx)
 		while True:
 			try:
-				resp, proxies = await self.get(url=url, params=params, exc_from='find_threads_per_page')
+				resp, proxies = await self.get(url=url, params=params, proxies=proxies, exc_from='find_threads_per_page')
 				threads_on_page = resp.text.count('"position":')
 				threads = json.loads(resp.text.split('application/ld+json">')[1].split('</script>')[0]).get('itemListElement', [])
 				break
@@ -123,13 +128,13 @@ class Parser:
 			if thread_url == '' or thread_url in self.parsed_threads: continue
 			
 			thread_title = thread.get('name', None)
-			is_parsed = await self.parse_thread(thread_url, thread_title=thread_title)
+			is_parsed = await self.parse_thread(thread_url, thread_title=thread_title, proxies=proxies)
 			if is_parsed: v += 1
 			self.parsed_threads.append(thread_url)
 		logging.info(f'[{category}|{page_idx}] Спаршено объявлений: {v} из {len(threads)}')
 
-	async def parse_thread(self, thread_url: str, thread_title: str = None):
-		resp, proxies = await self.get(url=thread_url, params=params, exc_from='parse_thread')
+	async def parse_thread(self, thread_url: str, thread_title: str = None, proxies: str = None):
+		resp, proxies = await self.get(url=thread_url, proxies=proxies, exc_from='parse_thread')
 		thread_html = resp.text
 
 		thread_creation_date = datetime.datetime.strptime(thread_html.split('creationDate": "')[1].split('"')[0].split('T')[0], '%Y-%m-%d')
@@ -154,7 +159,7 @@ class Parser:
 			if self.check_seller_threads:
 				if '<a href="/profile/account/' not in thread_html: return False
 				thread_profile = thread_html.split('<a href="/profile/account/')[1].split('"')[0]
-				resp, proxies = await self.get(url=f'https://www.gumtree.com/profile/account/{thread_profile}')
+				resp, proxies = await self.get(url=f'https://www.gumtree.com/profile/account/{thread_profile}', proxies=proxies, exc_from='parse_thread')
 				try: seller_threads_count = int(resp.text.split('<h2 class="css-v1sa9n e1l2cxkl9">')[1].split()[0])
 				except: seller_threads_count = 0
 				if seller_threads_count <= self.max_seller_threads_count:
@@ -178,7 +183,7 @@ async def main():
 		for category in categories_to_parse:
 			tasks.append(parser_client.parse_category(category))
 		await asyncio.gather(*tasks)
-		logging.info('')
+		await asyncio.sleep(antiflood_sleep_time.get('restart', 60))
 
 if __name__ == '__main__':
 	asyncio.run(main())
